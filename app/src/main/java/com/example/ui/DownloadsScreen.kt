@@ -458,6 +458,14 @@ fun QueueSettingsCard(
                         }
                     }
                 }
+
+                if (!saveLocation.isCustom) {
+                    Text(
+                        text = strings.saveLocationHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))

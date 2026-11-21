@@ -9,6 +9,28 @@ object VideoLinkExtractor {
         "mkv", "mp4", "avi", "mov", "webm", "flv", "m4v", "ts", "m3u8", "wmv", "3gp"
     )
 
+    val AUDIO_EXTENSIONS = setOf(
+        "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus"
+    )
+
+    val ARCHIVE_AND_APP_EXTENSIONS = setOf(
+        "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "apk", "apks", "xapk", "exe", "msi", "dmg", "iso", "img", "bin"
+    )
+
+    val DOCUMENT_EXTENSIONS = setOf(
+        "pdf", "epub", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv", "srt", "ass"
+    )
+
+    val IMAGE_EXTENSIONS = setOf(
+        "jpg", "jpeg", "png", "webp", "gif", "bmp"
+    )
+
+    // Extensions safe to extract when scanning an HTML/JSON response body (excludes webpage image/css noise)
+    val BODY_EXTRACTABLE_EXTENSIONS = VIDEO_EXTENSIONS + AUDIO_EXTENSIONS + ARCHIVE_AND_APP_EXTENSIONS + DOCUMENT_EXTENSIONS
+
+    // All direct downloadable extensions when given directly as a URL or in Location headers
+    val DOWNLOADABLE_EXTENSIONS = BODY_EXTRACTABLE_EXTENSIONS + IMAGE_EXTENSIONS
+
     private val URL_REGEX = Regex(
         """https?://[^\s"'<>\]\)]+""",
         RegexOption.IGNORE_CASE
@@ -72,17 +94,36 @@ object VideoLinkExtractor {
      * (e.g., .mkv, .mp4, .avi) before any query string or fragment.
      */
     fun isVideoDownloadUrl(url: String): Boolean {
+        return extractUrlExtensionLower(url) in VIDEO_EXTENSIONS
+    }
+
+    /**
+     * Checks whether a URL points to any supported direct downloadable file extension
+     * (video, audio, archive, apk, document, image) before query/fragment.
+     */
+    fun isDirectDownloadableUrl(url: String): Boolean {
+        return extractUrlExtensionLower(url) in DOWNLOADABLE_EXTENSIONS
+    }
+
+    /**
+     * Checks whether a URL is safe to extract from an HTML/text page body (excludes webpage image/icon assets).
+     */
+    fun isBodyExtractableDownloadUrl(url: String): Boolean {
+        return extractUrlExtensionLower(url) in BODY_EXTRACTABLE_EXTENSIONS
+    }
+
+    private fun extractUrlExtensionLower(url: String): String? {
         if (!url.startsWith("http://", ignoreCase = true) &&
             !url.startsWith("https://", ignoreCase = true)
         ) {
-            return false
+            return null
         }
         val withoutFragment = url.substringBefore('#')
         val withoutQuery = withoutFragment.substringBefore('?')
         val lastSegment = withoutQuery.substringAfterLast('/', "")
-        if ('.' !in lastSegment) return false
+        if ('.' !in lastSegment) return null
         val extension = lastSegment.substringAfterLast('.', "").lowercase(Locale.US)
-        return extension in VIDEO_EXTENSIONS
+        return extension.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -105,6 +146,31 @@ object VideoLinkExtractor {
         return results.toList()
     }
 
+    /**
+     * Scans text/headers for any downloadable file URL (video, audio, archives, APKs, documents).
+     * When [fromHtmlBody] is true, ignores common webpage image formats to avoid false positives.
+     */
+    fun extractDownloadableUrlsFromText(text: String, fromHtmlBody: Boolean = false): List<String> {
+        if (text.isBlank()) return emptyList()
+        val normalized = text
+            .replace("\\/", "/")
+            .replace("&amp;", "&")
+
+        val results = linkedSetOf<String>()
+        for (match in URL_REGEX.findAll(normalized)) {
+            val cleaned = cleanTrailingPunctuation(match.value)
+            val matched = if (fromHtmlBody) {
+                isBodyExtractableDownloadUrl(cleaned)
+            } else {
+                isDirectDownloadableUrl(cleaned)
+            }
+            if (matched) {
+                results.add(cleaned)
+            }
+        }
+        return results.toList()
+    }
+
     fun extractRefreshRedirectUrl(refreshHeader: String?): String? {
         if (refreshHeader.isNullOrBlank()) return null
         val match = REFRESH_URL_REGEX.find(refreshHeader)?.groupValues?.getOrNull(1)
@@ -112,7 +178,7 @@ object VideoLinkExtractor {
     }
 
     /**
-     * Given a list of candidate video URLs (for example across 302 redirect hops),
+     * Given a list of candidate download URLs (for example across 302 redirect hops),
      * returns the final direct download URL (last candidate in the redirect chain).
      */
     fun selectBestVideoUrl(candidates: List<String>): String? {
@@ -129,14 +195,14 @@ object VideoLinkExtractor {
         }
         val pathOnly = url.substringBefore('#').substringBefore('?')
         val segment = pathOnly.substringAfterLast('/', "").trim()
-        return if (segment.isNotEmpty()) decodeSafely(segment) else "video_file"
+        return if (segment.isNotEmpty()) decodeSafely(segment) else "downloaded_file"
     }
 
     fun extractExtension(url: String, filename: String? = null): String? {
         val target = filename?.takeIf { '.' in it }
             ?: url.substringBefore('#').substringBefore('?').substringAfterLast('/', "")
         val ext = target.substringAfterLast('.', "").uppercase(Locale.US)
-        return ext.takeIf { it.lowercase(Locale.US) in VIDEO_EXTENSIONS }
+        return ext.takeIf { it.lowercase(Locale.US) in DOWNLOADABLE_EXTENSIONS }
     }
 
     fun formatByteSize(bytes: Long?): String? {

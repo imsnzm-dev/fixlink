@@ -161,9 +161,21 @@ class DownloadEngine(
         return sanitizeFileName(rawName)
     }
 
-    fun hasFileConflict(fileName: String): Boolean {
+    fun hasFileConflict(
+        fileName: String,
+        url: String? = null,
+        sourcePlayUrl: String? = null,
+    ): Boolean {
         val cleanName = sanitizeFileName(fileName)
         if (_tasks.value.any { it.fileName.equals(cleanName, ignoreCase = true) }) {
+            return true
+        }
+        val cleanSource = sourcePlayUrl?.trim()?.takeIf { it.isNotBlank() }
+        if (cleanSource != null && _tasks.value.any { it.sourcePlayUrl == cleanSource }) {
+            return true
+        }
+        val normalizedBase = url?.substringBefore('?')?.trim()?.takeIf { it.isNotBlank() }
+        if (normalizedBase != null && _tasks.value.any { it.url.substringBefore('?') == normalizedBase }) {
             return true
         }
         return existsInSaveDestination(cleanName)
@@ -187,35 +199,78 @@ class DownloadEngine(
         val customTreeStr = _saveLocation.value.treeUriString
         if (!customTreeStr.isNullOrBlank()) {
             val treeUri = runCatching { Uri.parse(customTreeStr) }.getOrNull()
-            if (treeUri != null) {
-                val found = findSafDocumentUris(treeUri, fileName).isNotEmpty()
-                if (found) return true
+            if (treeUri != null && findSafDocumentUris(treeUri, fileName).isNotEmpty()) {
+                return true
             }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val foundInMediaStore = runCatching {
-                val projection = arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME)
-                val selection = "${MediaStore.Downloads.DISPLAY_NAME} = ? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
-                val args = arrayOf(fileName, "%FiXLink%")
-                appContext.contentResolver.query(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    projection,
-                    selection,
-                    args,
-                    null,
-                )?.use { cursor ->
-                    cursor.count > 0
-                } ?: false
-            }.getOrDefault(false)
-            if (foundInMediaStore) return true
+            val foundInDownloads = queryMediaStoreForFileName(
+                uri = MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                nameColumn = MediaStore.Downloads.DISPLAY_NAME,
+                fileName = fileName,
+            )
+            if (foundInDownloads) return true
+
+            val foundInVideo = queryMediaStoreForFileName(
+                uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                nameColumn = MediaStore.Video.Media.DISPLAY_NAME,
+                fileName = fileName,
+            )
+            if (foundInVideo) return true
+        }
+
+        val publicDownloads = runCatching {
+            @Suppress("DEPRECATION")
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        }.getOrNull()
+        if (publicDownloads != null) {
+            val publicSubdir = File(publicDownloads, "FiXLink")
+            if (existsCaseInsensitiveInDir(publicSubdir, fileName) ||
+                existsCaseInsensitiveInDir(publicDownloads, fileName)
+            ) {
+                return true
+            }
         }
 
         val fallbackDir = File(
             appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: appContext.filesDir,
             "FiXLink",
         )
-        return File(fallbackDir, fileName).exists()
+        return existsCaseInsensitiveInDir(fallbackDir, fileName)
+    }
+
+    private fun queryMediaStoreForFileName(
+        uri: Uri,
+        nameColumn: String,
+        fileName: String,
+    ): Boolean {
+        return runCatching {
+            appContext.contentResolver.query(
+                uri,
+                arrayOf(nameColumn),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val idx = cursor.getColumnIndex(nameColumn)
+                while (cursor.moveToNext()) {
+                    if (idx >= 0) {
+                        val existing = cursor.getString(idx)
+                        if (existing != null && existing.equals(fileName, ignoreCase = true)) {
+                            return@use true
+                        }
+                    }
+                }
+                false
+            } ?: false
+        }.getOrDefault(false)
+    }
+
+    private fun existsCaseInsensitiveInDir(dir: File, fileName: String): Boolean {
+        if (!dir.exists() || !dir.isDirectory) return false
+        if (File(dir, fileName).exists()) return true
+        return dir.list()?.any { it.equals(fileName, ignoreCase = true) } == true
     }
 
     fun enqueue(
@@ -1036,6 +1091,8 @@ class DownloadEngine(
         return candidate
     }
 
+    fun getMimeTypeForTask(fileName: String): String = guessMimeType(fileName)
+
     private fun guessMimeType(fileName: String): String {
         return when (fileName.substringAfterLast('.', "").lowercase()) {
             "mkv" -> "video/x-matroska"
@@ -1044,7 +1101,25 @@ class DownloadEngine(
             "mov" -> "video/quicktime"
             "webm" -> "video/webm"
             "m3u8" -> "application/x-mpegURL"
-            else -> "video/*"
+            "mp3" -> "audio/mpeg"
+            "m4a", "aac" -> "audio/mp4"
+            "flac" -> "audio/flac"
+            "wav" -> "audio/wav"
+            "ogg", "opus" -> "audio/ogg"
+            "zip" -> "application/zip"
+            "rar" -> "application/vnd.rar"
+            "7z" -> "application/x-7z-compressed"
+            "tar" -> "application/x-tar"
+            "gz" -> "application/gzip"
+            "apk" -> "application/vnd.android.package-archive"
+            "pdf" -> "application/pdf"
+            "epub" -> "application/epub+zip"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "txt", "srt", "ass" -> "text/plain"
+            else -> "*/*"
         }
     }
 

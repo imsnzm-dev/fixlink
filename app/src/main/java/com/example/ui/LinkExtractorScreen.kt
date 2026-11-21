@@ -100,6 +100,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.download.DownloadEngine
 import com.example.download.DownloadStatus
 import com.example.download.DownloadTask
@@ -155,6 +156,15 @@ fun FiXLinkApp(
         },
     )
 
+    fun launchSaveFolderPicker() {
+        val initialUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload")
+        } else {
+            null
+        }
+        folderPickerLauncher.launch(initialUri)
+    }
+
     fun ensureNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = ContextCompat.checkSelfPermission(
@@ -191,7 +201,7 @@ fun FiXLinkApp(
         fromResolver: Boolean,
     ) {
         val candidateName = downloadEngine.resolveCandidateFileName(url, suggestedFileName)
-        if (downloadEngine.hasFileConflict(candidateName)) {
+        if (downloadEngine.hasFileConflict(candidateName, url = url, sourcePlayUrl = sourcePlayUrl)) {
             pendingConflictRequest = PendingDownloadRequest(
                 url = url,
                 sourcePlayUrl = sourcePlayUrl,
@@ -237,13 +247,22 @@ fun FiXLinkApp(
             return
         }
         try {
+            val mimeType = downloadEngine.getMimeTypeForTask(task.fileName)
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "video/*")
+                setDataAndType(uri, mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(intent)
         } catch (_: Exception) {
             showMessage(strings.msgNoFileOpener)
+        }
+    }
+
+    fun openExternalUrl(url: String) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: Exception) {
+            showMessage(strings.msgNoBrowser)
         }
     }
 
@@ -419,7 +438,7 @@ fun FiXLinkApp(
                                 onFilterSelected = viewModel::setDownloadFilter,
                                 onConcurrencyChanged = downloadEngine::setConcurrencyLimit,
                                 onConnectionsChanged = downloadEngine::setConnectionsPerDownload,
-                                onPickSaveFolder = { folderPickerLauncher.launch(null) },
+                                onPickSaveFolder = ::launchSaveFolderPicker,
                                 onResetSaveFolder = {
                                     downloadEngine.resetSaveLocationToDefault()
                                     showMessage(strings.msgFolderReset)
@@ -453,6 +472,7 @@ fun FiXLinkApp(
                                 concurrencyLimit = concurrencyLimit,
                                 connectionsPerDownload = connectionsPerDownload,
                                 saveLocation = saveLocation,
+                                currentVersion = BuildConfig.VERSION_NAME,
                                 strings = strings,
                                 onSelectLanguage = { lang ->
                                     viewModel.setLanguage(lang)
@@ -460,13 +480,18 @@ fun FiXLinkApp(
                                 },
                                 onConcurrencyChanged = downloadEngine::setConcurrencyLimit,
                                 onConnectionsChanged = downloadEngine::setConnectionsPerDownload,
-                                onPickSaveFolder = { folderPickerLauncher.launch(null) },
+                                onPickSaveFolder = ::launchSaveFolderPicker,
                                 onResetSaveFolder = {
                                     downloadEngine.resetSaveLocationToDefault()
                                     showMessage(strings.msgFolderReset)
                                 },
                                 onToggleVlcInterceptor = ::toggleVlcInterceptor,
                                 onOpenVlcSettings = { VlcIntentHelper.openVlcAppSettings(context) },
+                                onCheckUpdates = { viewModel.checkForAppUpdates(BuildConfig.VERSION_NAME) },
+                                onOpenGitHubUrl = ::openExternalUrl,
+                                onDownloadReleaseApk = { apkUrl, apkName ->
+                                    startManualDownload(apkUrl, apkName)
+                                },
                                 onAttemptUnlockDeveloper = { password ->
                                     val ok = viewModel.tryUnlockDeveloperMode(password)
                                     if (ok) {

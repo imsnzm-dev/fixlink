@@ -3,6 +3,7 @@ package com.example.network
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +54,29 @@ class CurlRedirectResolver(
         private const val MAX_TEXT_BODY_BYTES = 256L * 1024L
         private const val CURL_USER_AGENT = "curl/8.19.0"
 
+        private val DOWNLOADABLE_MIME_EXACT = setOf(
+            "application/octet-stream",
+            "application/x-download",
+            "application/force-download",
+            "binary/octet-stream",
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/x-rar-compressed",
+            "application/vnd.rar",
+            "application/x-7z-compressed",
+            "application/x-tar",
+            "application/gzip",
+            "application/x-gzip",
+            "application/pdf",
+            "application/vnd.android.package-archive",
+            "application/x-msdownload",
+            "application/x-iso9660-image",
+            "application/epub+zip",
+            "application/msword",
+            "application/x-mpegurl",
+            "application/vnd.apple.mpegurl",
+        )
+
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .followRedirects(false)
             .followSslRedirects(false)
@@ -75,16 +99,13 @@ class CurlRedirectResolver(
 
         val hops = mutableListOf<RedirectHop>()
         val candidateVideoUrls = linkedSetOf<String>()
+        val candidateFileUrls = linkedSetOf<String>()
         val visitedUrls = hashSetOf<String>()
         var currentUrl = inputUrl
         var finalStatusCode = 0
         var finalContentType: String? = null
         var finalContentLength: Long? = null
         var finalContentDisposition: String? = null
-
-        if (VideoLinkExtractor.isVideoDownloadUrl(currentUrl)) {
-            candidateVideoUrls.add(currentUrl)
-        }
 
         for (hopIndex in 0..MAX_REDIRECTS) {
             currentCoroutineContext().ensureActive()
@@ -94,7 +115,7 @@ class CurlRedirectResolver(
             }
 
             val parsedUrl = currentUrl.toHttpUrlOrNull()
-                ?: if (candidateVideoUrls.isNotEmpty()) {
+                ?: if (candidateVideoUrls.isNotEmpty() || candidateFileUrls.isNotEmpty()) {
                     appendLine("* Reached non-standard redirect target; returning captured link.")
                     break
                 } else {
@@ -154,9 +175,8 @@ class CurlRedirectResolver(
                 .header("Connection", "keep-alive")
                 .build()
 
-            // Once we already captured a video link from a previous Location header,
-            // use a short probe timeout and gracefully finish if the final host fails or drops.
-            val activeClient = if (candidateVideoUrls.isNotEmpty()) fastProbeClient else client
+            val hasRedirectCandidate = candidateVideoUrls.isNotEmpty() || candidateFileUrls.isNotEmpty()
+            val activeClient = if (hasRedirectCandidate) fastProbeClient else client
             val call = activeClient.newCall(request)
             val response = try {
                 call.execute()
@@ -164,8 +184,8 @@ class CurlRedirectResolver(
                 call.cancel()
                 throw e
             } catch (e: IOException) {
-                if (candidateVideoUrls.isNotEmpty()) {
-                    appendLine("* Follow-up probe interrupted (${e.message ?: "timeout"}); download link already found in redirect structure.")
+                if (hasRedirectCandidate) {
+                    appendLine("* Follow-up probe interrupted (${e.message ?: "timeout"}); download link already captured.")
                     onLogUpdate(logBuilder.toString(), hopIndex + 1)
                     break
                 }
@@ -185,8 +205,8 @@ class CurlRedirectResolver(
                     val headerName = resp.headers.name(i)
                     val headerVal = resp.headers.value(i)
                     appendLine("< $headerName: $headerVal")
-                    // Catch any video URL appearing inside any header value (Location, Content-Location, etc.)
                     candidateVideoUrls.addAll(VideoLinkExtractor.extractVideoUrlsFromText(headerVal))
+                    candidateFileUrls.addAll(VideoLinkExtractor.extractDownloadableUrlsFromText(headerVal, fromHtmlBody = false))
                 }
                 appendLine("<")
 
@@ -201,8 +221,12 @@ class CurlRedirectResolver(
                 finalContentLength = contentLength
                 finalContentDisposition = contentDisposition
 
-                if (VideoLinkExtractor.isVideoDownloadUrl(currentUrl)) {
-                    candidateVideoUrls.add(currentUrl)
+                if (statusCode in 200..299 && !isHtmlResponse(contentType)) {
+                    if (VideoLinkExtractor.isVideoDownloadUrl(currentUrl)) {
+                        candidateVideoUrls.add(currentUrl)
+                    } else if (isSmartDirectDownloadResponse(contentType, contentDisposition, currentUrl)) {
+                        candidateFileUrls.add(currentUrl)
+                    }
                 }
 
                 hops.add(
@@ -224,6 +248,8 @@ class CurlRedirectResolver(
 
                     if (VideoLinkExtractor.isVideoDownloadUrl(resolvedNextUrl)) {
                         candidateVideoUrls.add(resolvedNextUrl)
+                    } else if (VideoLinkExtractor.isDirectDownloadableUrl(resolvedNextUrl)) {
+                        candidateFileUrls.add(resolvedNextUrl)
                     }
 
                     appendLine("* Ignoring the response-body")
@@ -234,13 +260,17 @@ class CurlRedirectResolver(
                     currentUrl = resolvedNextUrl
                     shouldContinue = true
                 } else {
-                    // Non-redirect response: do NOT download full video payload!
-                    val isBinaryOrVideo = isBinaryOrVideoContent(contentType, currentUrl)
-                    if (isBinaryOrVideo) {
-                        appendLine("* Video/binary response detected (${VideoLinkExtractor.formatByteSize(contentLength) ?: "stream"}). Closing connection without downloading payload.")
+                    val isDirectDownload = isSmartDirectDownloadResponse(contentType, contentDisposition, currentUrl)
+                    if (isDirectDownload && statusCode in 200..299) {
+                        appendLine("* Downloadable file response detected (${VideoLinkExtractor.formatByteSize(contentLength) ?: "stream"}). Closing connection without downloading payload.")
                         appendLine("* closing connection #$hopIndex")
-                    } else {
-                        // Inspect small text/HTML/JSON bodies for embedded video links
+                        if (VideoLinkExtractor.isVideoDownloadUrl(currentUrl)) {
+                            candidateVideoUrls.add(currentUrl)
+                        } else {
+                            candidateFileUrls.add(currentUrl)
+                        }
+                    } else if (!isDirectDownload && statusCode in 200..299) {
+                        // Inspect small text/HTML/JSON bodies for embedded video or direct file links
                         val bodySnippet = try {
                             val source = resp.body?.source()
                             if (source != null) {
@@ -255,8 +285,10 @@ class CurlRedirectResolver(
                             ""
                         }
                         if (bodySnippet.isNotBlank()) {
-                            val foundInBody = VideoLinkExtractor.extractVideoUrlsFromText(bodySnippet)
-                            candidateVideoUrls.addAll(foundInBody)
+                            candidateVideoUrls.addAll(VideoLinkExtractor.extractVideoUrlsFromText(bodySnippet))
+                            candidateFileUrls.addAll(
+                                VideoLinkExtractor.extractDownloadableUrlsFromText(bodySnippet, fromHtmlBody = true)
+                            )
                         }
                         appendLine("* Connection #$hopIndex to host $host:$port left intact")
                     }
@@ -267,8 +299,17 @@ class CurlRedirectResolver(
             if (!shouldContinue) break
         }
 
-        val directUrl = VideoLinkExtractor.selectBestVideoUrl(candidateVideoUrls.toList())
-            ?: if (isBinaryOrVideoContent(finalContentType, currentUrl) && finalStatusCode in 200..299) {
+        val allCandidates = if (candidateVideoUrls.isNotEmpty()) {
+            candidateVideoUrls.toList()
+        } else {
+            candidateFileUrls.toList()
+        }
+
+        val directUrl = VideoLinkExtractor.selectBestVideoUrl(allCandidates)
+            ?: if (
+                finalStatusCode in 200..299 &&
+                isSmartDirectDownloadResponse(finalContentType, finalContentDisposition, currentUrl)
+            ) {
                 currentUrl
             } else {
                 null
@@ -279,13 +320,14 @@ class CurlRedirectResolver(
         }
         val extension = directUrl?.let {
             VideoLinkExtractor.extractExtension(it, filename)
-        }
+        } ?: if (directUrl != null) guessExtensionFromMime(finalContentType) else null
+
         val formattedSize = VideoLinkExtractor.formatByteSize(finalContentLength)
 
         CurlResolutionResult(
             sourceUrl = inputUrl,
             directVideoUrl = directUrl,
-            candidateVideoUrls = candidateVideoUrls.toList(),
+            candidateVideoUrls = allCandidates,
             filename = filename,
             extension = extension,
             fileSizeFormatted = formattedSize,
@@ -296,7 +338,12 @@ class CurlRedirectResolver(
     }
 
     fun resolveFromRawTrace(rawTrace: String): CurlResolutionResult {
-        val candidates = VideoLinkExtractor.extractVideoUrlsFromText(rawTrace)
+        val videoCandidates = VideoLinkExtractor.extractVideoUrlsFromText(rawTrace)
+        val candidates = if (videoCandidates.isNotEmpty()) {
+            videoCandidates
+        } else {
+            VideoLinkExtractor.extractDownloadableUrlsFromText(rawTrace, fromHtmlBody = false)
+        }
         val best = VideoLinkExtractor.selectBestVideoUrl(candidates)
         val filename = best?.let { VideoLinkExtractor.extractFilename(it) }
         val extension = best?.let { VideoLinkExtractor.extractExtension(it, filename) }
@@ -317,10 +364,52 @@ class CurlRedirectResolver(
         )
     }
 
-    private fun isBinaryOrVideoContent(contentType: String?, url: String): Boolean {
-        if (VideoLinkExtractor.isVideoDownloadUrl(url)) return true
-        val ct = contentType?.lowercase() ?: return false
-        return ct.startsWith("video/") || ct.contains("application/octet-stream")
+    internal fun isSmartDirectDownloadResponse(
+        contentType: String?,
+        contentDisposition: String?,
+        url: String,
+    ): Boolean {
+        val disp = contentDisposition?.lowercase(Locale.US).orEmpty()
+        if (disp.contains("attachment") || disp.contains("filename=") || disp.contains("filename*=")) {
+            return true
+        }
+
+        val mime = contentType?.substringBefore(';')?.trim()?.lowercase(Locale.US).orEmpty()
+        if (mime == "text/html" || mime == "application/xhtml+xml") {
+            return false
+        }
+
+        if (VideoLinkExtractor.isDirectDownloadableUrl(url)) {
+            return true
+        }
+
+        if (mime.isEmpty()) return false
+        return mime.startsWith("video/") ||
+            mime.startsWith("audio/") ||
+            mime.startsWith("image/") ||
+            mime.startsWith("binary/") ||
+            mime.startsWith("application/vnd.openxmlformats-officedocument") ||
+            mime in DOWNLOADABLE_MIME_EXACT
+    }
+
+    private fun isHtmlResponse(contentType: String?): Boolean {
+        val mime = contentType?.substringBefore(';')?.trim()?.lowercase(Locale.US).orEmpty()
+        return mime == "text/html" || mime == "application/xhtml+xml"
+    }
+
+    private fun guessExtensionFromMime(contentType: String?): String? {
+        val mime = contentType?.substringBefore(';')?.trim()?.lowercase(Locale.US) ?: return null
+        return when (mime) {
+            "video/x-matroska" -> "MKV"
+            "video/mp4" -> "MP4"
+            "video/webm" -> "WEBM"
+            "audio/mpeg" -> "MP3"
+            "application/pdf" -> "PDF"
+            "application/zip", "application/x-zip-compressed" -> "ZIP"
+            "application/x-rar-compressed", "application/vnd.rar" -> "RAR"
+            "application/vnd.android.package-archive" -> "APK"
+            else -> null
+        }
     }
 
     private fun defaultStatusText(code: Int): String = when (code) {

@@ -5,6 +5,7 @@ import com.example.download.DownloadTask
 import com.example.download.QueueConcurrency
 import com.example.network.CurlRedirectResolver
 import com.example.network.VideoLinkExtractor
+import com.example.network.GitHubUpdateChecker
 import com.example.ui.AppDestination
 import com.example.ui.AppLanguage
 import com.example.ui.DownloadFilter
@@ -46,7 +47,7 @@ class VideoLinkExtractorTest {
     }
 
     @Test
-    fun `isVideoDownloadUrl detects mkv mp4 avi with query params`() {
+    fun `isVideoDownloadUrl and smart direct download detection handle video and non-video files`() {
         assertTrue(
             VideoLinkExtractor.isVideoDownloadUrl(
                 "http://dl10.tdmm2.ir/movies/sere/05/We.Are.All.Trying.Here/fasl1dub/We.Are.All.Trying.Here.E12.720p.NF.WEB-DL.Golchindl.DUBLE.mkv?expire=1795266368&hash=1qREDmRrIguQTdhLkw2YDw"
@@ -55,6 +56,30 @@ class VideoLinkExtractorTest {
         assertTrue(VideoLinkExtractor.isVideoDownloadUrl("https://cdn.example.com/video/sample.MP4"))
         assertTrue(VideoLinkExtractor.isVideoDownloadUrl("http://cdn.example.com/movie.avi?token=123"))
         assertFalse(VideoLinkExtractor.isVideoDownloadUrl("http://example.com/play-link/play.php?t=serie"))
+
+        // Non-video direct downloadable files
+        assertTrue(VideoLinkExtractor.isDirectDownloadableUrl("https://cdn.example.com/release/app-v2.apk"))
+        assertTrue(VideoLinkExtractor.isDirectDownloadableUrl("https://cdn.example.com/archive/pack.zip?token=abc"))
+        assertTrue(VideoLinkExtractor.isDirectDownloadableUrl("https://cdn.example.com/docs/manual.pdf"))
+        assertTrue(VideoLinkExtractor.isDirectDownloadableUrl("https://cdn.example.com/audio/track.mp3"))
+
+        // HTML body scraping ignores webpage images/logos but captures archives/apks/videos
+        val html = """<img src="https://site.com/logo.png"><a href="https://site.com/files/app.zip">Download</a>"""
+        val extracted = VideoLinkExtractor.extractDownloadableUrlsFromText(html, fromHtmlBody = true)
+        assertEquals(listOf("https://site.com/files/app.zip"), extracted)
+
+        val resolver = CurlRedirectResolver()
+        assertTrue(resolver.isSmartDirectDownloadResponse("application/zip", null, "https://site.com/dl?id=1"))
+        assertTrue(resolver.isSmartDirectDownloadResponse("text/plain", "attachment; filename=\"notes.txt\"", "https://site.com/dl?id=2"))
+        assertFalse(resolver.isSmartDirectDownloadResponse("text/html; charset=utf-8", null, "https://site.com/home"))
+    }
+
+    @Test
+    fun `github version comparison detects newer versions cleanly`() {
+        assertTrue(GitHubUpdateChecker.isNewerVersion("v1.0.1", "1.0"))
+        assertTrue(GitHubUpdateChecker.isNewerVersion("v2.0", "1.9.5"))
+        assertFalse(GitHubUpdateChecker.isNewerVersion("v1.0", "1.0"))
+        assertFalse(GitHubUpdateChecker.isNewerVersion("0.9.9", "1.0"))
     }
 
     @Test

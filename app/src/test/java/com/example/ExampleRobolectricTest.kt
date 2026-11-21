@@ -150,13 +150,24 @@ class ExampleRobolectricTest {
         assertFalse(engine.saveLocation.value.isCustom)
         assertEquals("Downloads/FiXLink", engine.saveLocation.value.displayPath)
 
-        val first = engine.enqueue("http://127.0.0.1:1/video1.mkv", suggestedFileName = "video1.mkv")
+        val first = engine.enqueue(
+            url = "http://127.0.0.1:1/video1.mkv?expire=111",
+            sourcePlayUrl = "http://example.com/play.php?i=610537",
+            suggestedFileName = "video1.mkv",
+        )
         val second = engine.enqueue("http://127.0.0.1:1/video2.mp4", suggestedFileName = "video2.mp4")
 
         engine.pause(first.id)
         engine.pause(second.id)
 
         assertTrue(engine.hasFileConflict("video1.mkv"))
+        assertTrue(
+            engine.hasFileConflict(
+                fileName = "different_name.mkv",
+                url = "http://127.0.0.1:1/other.mkv",
+                sourcePlayUrl = "http://example.com/play.php?i=610537",
+            )
+        )
         assertEquals("video1 (1).mkv", engine.suggestUniqueFileName("video1.mkv"))
 
         val replaced = engine.enqueue(

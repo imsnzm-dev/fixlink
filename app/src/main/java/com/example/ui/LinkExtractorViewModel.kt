@@ -8,11 +8,13 @@ import com.example.download.DownloadTask
 import com.example.download.QueueConcurrency
 import com.example.network.CurlRedirectResolver
 import com.example.network.CurlResolutionResult
+import com.example.network.GitHubUpdateChecker
+import com.example.network.GitHubUpdateResult
 import com.example.network.VideoLinkExtractor
+import com.example.security.DeveloperAccessVerifier
 import java.io.IOException
 import java.net.UnknownHostException
 import kotlin.coroutines.cancellation.CancellationException
-import com.example.security.DeveloperAccessVerifier
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,6 +58,12 @@ enum class ErrorType {
     CANCELLED,
 }
 
+sealed interface UpdateCheckState {
+    data object Idle : UpdateCheckState
+    data object Checking : UpdateCheckState
+    data class Completed(val result: GitHubUpdateResult) : UpdateCheckState
+}
+
 data class LinkExtractorScreenState(
     val language: AppLanguage = AppLanguage.EN,
     val destination: AppDestination = AppDestination.RESOLVER,
@@ -69,10 +77,12 @@ data class LinkExtractorScreenState(
     val capturedFromExternalIntent: Boolean = false,
     val detectedClipboardUrl: String? = null,
     val sessionHistory: List<CurlResolutionResult> = emptyList(),
+    val updateCheckState: UpdateCheckState = UpdateCheckState.Idle,
 )
 
 class LinkExtractorViewModel(
     private val resolver: CurlRedirectResolver = CurlRedirectResolver(),
+    private val updateChecker: GitHubUpdateChecker = GitHubUpdateChecker(),
 ) : ViewModel() {
 
     private val _screenState = MutableStateFlow(LinkExtractorScreenState())
@@ -166,6 +176,15 @@ class LinkExtractorViewModel(
                 isDeveloperMode = false,
                 isLogExpanded = false,
             )
+        }
+    }
+
+    fun checkForAppUpdates(currentVersion: String) {
+        if (_screenState.value.updateCheckState is UpdateCheckState.Checking) return
+        viewModelScope.launch {
+            _screenState.update { it.copy(updateCheckState = UpdateCheckState.Checking) }
+            val result = updateChecker.checkForUpdates(currentVersion)
+            _screenState.update { it.copy(updateCheckState = UpdateCheckState.Completed(result)) }
         }
     }
 

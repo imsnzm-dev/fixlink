@@ -22,10 +22,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.CastConnected
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -64,9 +68,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.unit.dp
 import com.example.download.DownloadSaveLocation
 import com.example.download.QueueConcurrency
+import com.example.network.GitHubUpdateChecker
+import com.example.network.GitHubUpdateResult
 
 @Composable
 fun SettingsScreen(
@@ -74,6 +81,7 @@ fun SettingsScreen(
     concurrencyLimit: QueueConcurrency,
     connectionsPerDownload: Int,
     saveLocation: DownloadSaveLocation,
+    currentVersion: String,
     strings: AppStrings,
     onSelectLanguage: (AppLanguage) -> Unit,
     onConcurrencyChanged: (QueueConcurrency) -> Unit,
@@ -82,6 +90,9 @@ fun SettingsScreen(
     onResetSaveFolder: () -> Unit,
     onToggleVlcInterceptor: (Boolean) -> Unit,
     onOpenVlcSettings: () -> Unit,
+    onCheckUpdates: () -> Unit,
+    onOpenGitHubUrl: (String) -> Unit,
+    onDownloadReleaseApk: (url: String, fileName: String?) -> Unit,
     onAttemptUnlockDeveloper: (String) -> Boolean,
     onDisableDeveloperMode: () -> Unit,
     modifier: Modifier = Modifier,
@@ -310,7 +321,23 @@ fun SettingsScreen(
                 }
             }
 
-            // 4. Developer Mode Section
+            // 4. App Updates (GitHub)
+            Text(
+                text = strings.sectionUpdates,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            GitHubUpdateCard(
+                currentVersion = currentVersion,
+                updateState = state.updateCheckState,
+                strings = strings,
+                onCheckUpdates = onCheckUpdates,
+                onOpenGitHubUrl = onOpenGitHubUrl,
+                onDownloadReleaseApk = onDownloadReleaseApk,
+            )
+
+            // 5. Developer Mode Section
             Text(
                 text = strings.sectionDeveloper,
                 style = MaterialTheme.typography.titleSmall,
@@ -428,6 +455,190 @@ fun SettingsScreen(
                 ok
             },
         )
+    }
+}
+
+@Composable
+private fun GitHubUpdateCard(
+    currentVersion: String,
+    updateState: UpdateCheckState,
+    strings: AppStrings,
+    onCheckUpdates: () -> Unit,
+    onOpenGitHubUrl: (String) -> Unit,
+    onDownloadReleaseApk: (url: String, fileName: String?) -> Unit,
+) {
+    val isChecking = updateState is UpdateCheckState.Checking
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.SystemUpdate,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Column {
+                    Text(
+                        text = strings.updatesTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = strings.updatesCurrentVersion(currentVersion),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(
+                    onClick = onCheckUpdates,
+                    enabled = !isChecking,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag("check_updates_button"),
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    if (isChecking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(if (isChecking) strings.updatesChecking else strings.actionCheckUpdates)
+                }
+
+                OutlinedButton(
+                    onClick = { onOpenGitHubUrl(GitHubUpdateChecker.REPO_URL) },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("open_github_repo_button"),
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.actionOpenGitHub)
+                }
+            }
+
+            if (updateState is UpdateCheckState.Completed) {
+                when (val result = updateState.result) {
+                    is GitHubUpdateResult.UpdateAvailable -> {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = strings.updatesAvailableTitle(result.latestVersion),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                                if (result.releaseNotes.isNotBlank()) {
+                                    Text(
+                                        text = result.releaseNotes,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 4,
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    if (!result.apkDownloadUrl.isNullOrBlank()) {
+                                        Button(
+                                            onClick = {
+                                                onDownloadReleaseApk(result.apkDownloadUrl, result.apkFileName)
+                                            },
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .heightIn(min = 48.dp)
+                                                .testTag("download_release_apk_button"),
+                                        ) {
+                                            Icon(Icons.Rounded.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(strings.actionDownloadApk)
+                                        }
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onOpenGitHubUrl(result.releaseUrl) },
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .testTag("open_release_page_button"),
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(strings.actionOpenReleasePage)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    is GitHubUpdateResult.UpToDate -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(
+                                text = strings.updatesUpToDate(result.latestVersion),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                    }
+
+                    is GitHubUpdateResult.NoReleasesYet -> {
+                        Text(
+                            text = strings.updatesNoReleases,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    is GitHubUpdateResult.Error -> {
+                        Text(
+                            text = result.message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
