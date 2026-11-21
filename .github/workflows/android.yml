@@ -1,5 +1,5 @@
 
-name: Build VidBridge APK
+name: Build FixLink Signed Release
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup JDK
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -29,14 +29,36 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug
+      - name: Prepare Release Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/fixlink-release.jks"
+          test -s "$RUNNER_TEMP/fixlink-release.jks"
 
-      - name: Upload APK
+      - name: Build Release APK
+        env:
+          KEYSTORE_PATH: ${{ runner.temp }}/fixlink-release.jks
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_PASSWORD"
+          gradle clean assembleRelease
+
+      - name: Verify APK Signature
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          test -n "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose "$APK"
+
+      - name: Upload FixLink APK
         uses: actions/upload-artifact@v4
         with:
-          name: VidBridge-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: FixLink-Signed-Release
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: 14
-
+          retention-days: 30
