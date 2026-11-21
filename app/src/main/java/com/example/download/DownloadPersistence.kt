@@ -70,7 +70,8 @@ class DownloadPersistence(private val storageFile: File) {
             put("publicUriString", task.publicUriString ?: JSONObject.NULL)
             put("errorMessage", task.errorMessage ?: JSONObject.NULL)
             put("createdAt", task.createdAt)
-            put("connectionCount", task.connectionCount)
+            put("connectionCount", task.connectionCount.coerceIn(1, 8))
+            put("overwriteExisting", task.overwriteExisting)
         }
     }
 
@@ -118,7 +119,8 @@ class DownloadPersistence(private val storageFile: File) {
             publicUriString = obj.optNullableString("publicUriString"),
             errorMessage = obj.optNullableString("errorMessage"),
             createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-            connectionCount = obj.optInt("connectionCount", 2).coerceIn(1, 4),
+            connectionCount = obj.optInt("connectionCount", 4).coerceIn(1, 8),
+            overwriteExisting = obj.optBoolean("overwriteExisting", false),
         )
     }
 

@@ -95,7 +95,8 @@ class ExampleRobolectricTest {
                 DownloadSegment(index = 1, startByte = 5_000L, endByte = 9_999L, downloadedBytes = 1_000L),
             ),
             partFilePath = "/tmp/task-1.part",
-            connectionCount = 2,
+            connectionCount = 8,
+            overwriteExisting = true,
         )
         val completedTask = DownloadTask(
             id = "task-2",
@@ -115,6 +116,8 @@ class ExampleRobolectricTest {
         assertEquals(DownloadStatus.PAUSED, reloaded[0].status)
         assertEquals(2, reloaded[0].segments.size)
         assertEquals(3_000L, reloaded[0].segments[0].downloadedBytes)
+        assertEquals(8, reloaded[0].connectionCount)
+        assertTrue(reloaded[0].overwriteExisting)
         assertEquals("http://example.com/play.php?i=1", reloaded[0].sourcePlayUrl)
         assertEquals(DownloadStatus.COMPLETED, reloaded[1].status)
         assertEquals("/tmp/done.mp4", reloaded[1].localFilePath)
@@ -123,14 +126,29 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `download engine updates queue concurrency threads pause move to top and remove`() {
+    fun `download engine supports 1 to 8 parts custom folder and duplicate file conflict checks`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val engine = DownloadEngine(context)
 
         engine.setConcurrencyLimit(QueueConcurrency.ONE)
-        engine.setConnectionsPerDownload(4)
+        engine.setConnectionsPerDownload(8)
         assertEquals(QueueConcurrency.ONE, engine.concurrencyLimit.value)
-        assertEquals(4, engine.connectionsPerDownload.value)
+        assertEquals(8, engine.connectionsPerDownload.value)
+
+        engine.setConnectionsPerDownload(99)
+        assertEquals(8, engine.connectionsPerDownload.value)
+        engine.setConnectionsPerDownload(0)
+        assertEquals(1, engine.connectionsPerDownload.value)
+        engine.setConnectionsPerDownload(8)
+
+        val customUri = Uri.parse("content://com.android.externalstorage.documents/tree/primary%3AMovies%2FFiXLink")
+        engine.setCustomSaveLocation(customUri)
+        assertTrue(engine.saveLocation.value.isCustom)
+        assertEquals(customUri.toString(), engine.saveLocation.value.treeUriString)
+
+        engine.resetSaveLocationToDefault()
+        assertFalse(engine.saveLocation.value.isCustom)
+        assertEquals("Downloads/FiXLink", engine.saveLocation.value.displayPath)
 
         val first = engine.enqueue("http://127.0.0.1:1/video1.mkv", suggestedFileName = "video1.mkv")
         val second = engine.enqueue("http://127.0.0.1:1/video2.mp4", suggestedFileName = "video2.mp4")
@@ -138,15 +156,23 @@ class ExampleRobolectricTest {
         engine.pause(first.id)
         engine.pause(second.id)
 
-        val pausedIds = engine.tasks.value.associateBy { it.id }
-        assertEquals(DownloadStatus.PAUSED, pausedIds[first.id]?.status)
-        assertEquals(DownloadStatus.PAUSED, pausedIds[second.id]?.status)
+        assertTrue(engine.hasFileConflict("video1.mkv"))
+        assertEquals("video1 (1).mkv", engine.suggestUniqueFileName("video1.mkv"))
 
-        engine.moveToTop(first.id)
-        assertEquals(first.id, engine.tasks.value.first().id)
+        val replaced = engine.enqueue(
+            url = "http://127.0.0.1:1/video1_new.mkv",
+            suggestedFileName = "video1.mkv",
+            overwriteExisting = true,
+        )
+        engine.pause(replaced.id)
+        assertTrue(engine.tasks.value.none { it.id == first.id })
+        assertTrue(engine.tasks.value.any { it.id == replaced.id && it.overwriteExisting })
 
-        engine.remove(first.id)
+        engine.moveToTop(second.id)
+        assertEquals(second.id, engine.tasks.value.first().id)
+
+        engine.remove(replaced.id)
         engine.remove(second.id)
-        assertTrue(engine.tasks.value.none { it.id == first.id || it.id == second.id })
+        assertTrue(engine.tasks.value.none { it.id == replaced.id || it.id == second.id })
     }
 }

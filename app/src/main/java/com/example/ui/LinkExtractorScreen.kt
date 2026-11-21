@@ -77,8 +77,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,6 +103,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.download.DownloadEngine
 import com.example.download.DownloadStatus
 import com.example.download.DownloadTask
+import com.example.download.PendingDownloadRequest
 import com.example.intent.VlcIntentHelper
 import com.example.network.CurlResolutionResult
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -117,16 +120,39 @@ fun FiXLinkApp(
     val downloadTasks by downloadEngine.tasks.collectAsStateWithLifecycle()
     val concurrencyLimit by downloadEngine.concurrencyLimit.collectAsStateWithLifecycle()
     val connectionsPerDownload by downloadEngine.connectionsPerDownload.collectAsStateWithLifecycle()
+    val saveLocation by downloadEngine.saveLocation.collectAsStateWithLifecycle()
 
     val strings = stringsFor(state.language)
     val layoutDirection = if (state.language == AppLanguage.FA) LayoutDirection.Rtl else LayoutDirection.Ltr
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    var pendingConflictRequest by remember { mutableStateOf<PendingDownloadRequest?>(null) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { /* Download continues regardless; notification shown if granted */ },
+    )
+
+    fun showMessage(msg: String) {
+        coroutineScope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(msg)
+        }
+    }
+
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+        onResult = { treeUri ->
+            if (treeUri != null) {
+                runCatching {
+                    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(treeUri, flags)
+                }
+                downloadEngine.setCustomSaveLocation(treeUri)
+                showMessage(strings.msgFolderUpdated)
+            }
+        },
     )
 
     fun ensureNotificationPermissionIfNeeded() {
@@ -141,16 +167,11 @@ fun FiXLinkApp(
         }
     }
 
-    fun showMessage(msg: String) {
-        coroutineScope.launch {
-            snackbarHostState.currentSnackbarData?.dismiss()
-            snackbarHostState.showSnackbar(msg)
+    fun showQueuedFeedback(fromResolver: Boolean) {
+        if (!fromResolver) {
+            showMessage(strings.msgDownloadQueued)
+            return
         }
-    }
-
-    fun startDownloadFromResolver(result: CurlResolutionResult) {
-        ensureNotificationPermissionIfNeeded()
-        viewModel.enqueueResolvedDownload(downloadEngine, result)
         coroutineScope.launch {
             snackbarHostState.currentSnackbarData?.dismiss()
             val action = snackbarHostState.showSnackbar(
@@ -163,10 +184,50 @@ fun FiXLinkApp(
         }
     }
 
+    fun requestDownloadWithConflictCheck(
+        url: String,
+        sourcePlayUrl: String?,
+        suggestedFileName: String?,
+        fromResolver: Boolean,
+    ) {
+        val candidateName = downloadEngine.resolveCandidateFileName(url, suggestedFileName)
+        if (downloadEngine.hasFileConflict(candidateName)) {
+            pendingConflictRequest = PendingDownloadRequest(
+                url = url,
+                sourcePlayUrl = sourcePlayUrl,
+                originalFileName = candidateName,
+                suggestedUniqueFileName = downloadEngine.suggestUniqueFileName(candidateName),
+                folderDisplayName = saveLocation.displayPath,
+            )
+        } else {
+            ensureNotificationPermissionIfNeeded()
+            downloadEngine.enqueue(
+                url = url,
+                sourcePlayUrl = sourcePlayUrl,
+                suggestedFileName = candidateName,
+                overwriteExisting = false,
+            )
+            showQueuedFeedback(fromResolver)
+        }
+    }
+
+    fun startDownloadFromResolver(result: CurlResolutionResult) {
+        val directUrl = result.directVideoUrl ?: return
+        requestDownloadWithConflictCheck(
+            url = directUrl,
+            sourcePlayUrl = result.sourceUrl.takeIf { it.isNotBlank() },
+            suggestedFileName = result.filename,
+            fromResolver = true,
+        )
+    }
+
     fun startManualDownload(url: String, fileName: String?) {
-        ensureNotificationPermissionIfNeeded()
-        downloadEngine.enqueue(url = url, suggestedFileName = fileName)
-        showMessage(strings.msgDownloadQueued)
+        requestDownloadWithConflictCheck(
+            url = url,
+            sourcePlayUrl = null,
+            suggestedFileName = fileName,
+            fromResolver = false,
+        )
     }
 
     fun openDownloadedFile(task: DownloadTask) {
@@ -353,10 +414,16 @@ fun FiXLinkApp(
                                 filter = state.downloadFilter,
                                 concurrencyLimit = concurrencyLimit,
                                 connectionsPerDownload = connectionsPerDownload,
+                                saveLocation = saveLocation,
                                 strings = strings,
                                 onFilterSelected = viewModel::setDownloadFilter,
                                 onConcurrencyChanged = downloadEngine::setConcurrencyLimit,
                                 onConnectionsChanged = downloadEngine::setConnectionsPerDownload,
+                                onPickSaveFolder = { folderPickerLauncher.launch(null) },
+                                onResetSaveFolder = {
+                                    downloadEngine.resetSaveLocationToDefault()
+                                    showMessage(strings.msgFolderReset)
+                                },
                                 onPauseTask = downloadEngine::pause,
                                 onResumeTask = {
                                     ensureNotificationPermissionIfNeeded()
@@ -364,6 +431,11 @@ fun FiXLinkApp(
                                 },
                                 onMoveToTop = downloadEngine::moveToTop,
                                 onDeleteTask = { downloadEngine.remove(it, deleteFiles = true) },
+                                onCopyTaskUrl = { url ->
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("download_url", url))
+                                    showMessage(strings.msgTaskUrlCopied)
+                                },
                                 onOpenTaskFile = ::openDownloadedFile,
                                 onPauseAll = downloadEngine::pauseAll,
                                 onResumeAll = {
@@ -380,6 +452,7 @@ fun FiXLinkApp(
                                 state = state,
                                 concurrencyLimit = concurrencyLimit,
                                 connectionsPerDownload = connectionsPerDownload,
+                                saveLocation = saveLocation,
                                 strings = strings,
                                 onSelectLanguage = { lang ->
                                     viewModel.setLanguage(lang)
@@ -387,6 +460,11 @@ fun FiXLinkApp(
                                 },
                                 onConcurrencyChanged = downloadEngine::setConcurrencyLimit,
                                 onConnectionsChanged = downloadEngine::setConnectionsPerDownload,
+                                onPickSaveFolder = { folderPickerLauncher.launch(null) },
+                                onResetSaveFolder = {
+                                    downloadEngine.resetSaveLocationToDefault()
+                                    showMessage(strings.msgFolderReset)
+                                },
                                 onToggleVlcInterceptor = ::toggleVlcInterceptor,
                                 onOpenVlcSettings = { VlcIntentHelper.openVlcAppSettings(context) },
                                 onAttemptUnlockDeveloper = { password ->
@@ -406,6 +484,36 @@ fun FiXLinkApp(
                         }
                     }
                 }
+            }
+
+            pendingConflictRequest?.let { req ->
+                FileConflictDialog(
+                    request = req,
+                    strings = strings,
+                    onRenameAndDownload = { customName ->
+                        pendingConflictRequest = null
+                        ensureNotificationPermissionIfNeeded()
+                        downloadEngine.enqueue(
+                            url = req.url,
+                            sourcePlayUrl = req.sourcePlayUrl,
+                            suggestedFileName = customName,
+                            overwriteExisting = false,
+                        )
+                        showQueuedFeedback(fromResolver = state.destination == AppDestination.RESOLVER)
+                    },
+                    onOverwrite = {
+                        pendingConflictRequest = null
+                        ensureNotificationPermissionIfNeeded()
+                        downloadEngine.enqueue(
+                            url = req.url,
+                            sourcePlayUrl = req.sourcePlayUrl,
+                            suggestedFileName = req.originalFileName,
+                            overwriteExisting = true,
+                        )
+                        showQueuedFeedback(fromResolver = state.destination == AppDestination.RESOLVER)
+                    },
+                    onDismiss = { pendingConflictRequest = null },
+                )
             }
         }
     }

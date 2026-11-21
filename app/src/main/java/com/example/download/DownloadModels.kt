@@ -25,6 +25,26 @@ enum class QueueConcurrency(val maxConcurrent: Int, val code: String) {
     }
 }
 
+data class DownloadSaveLocation(
+    val treeUriString: String? = null,
+    val displayPath: String = DEFAULT_DISPLAY_PATH,
+) {
+    val isCustom: Boolean
+        get() = !treeUriString.isNullOrBlank()
+
+    companion object {
+        const val DEFAULT_DISPLAY_PATH = "Downloads/FiXLink"
+    }
+}
+
+data class PendingDownloadRequest(
+    val url: String,
+    val sourcePlayUrl: String? = null,
+    val originalFileName: String,
+    val suggestedUniqueFileName: String,
+    val folderDisplayName: String,
+)
+
 data class DownloadSegment(
     val index: Int,
     val startByte: Long,
@@ -39,6 +59,10 @@ data class DownloadSegment(
 
     val isComplete: Boolean
         get() = downloadedBytes >= totalSegmentBytes
+
+    val progressFraction: Float
+        get() = if (totalSegmentBytes <= 0L) 0f
+        else (downloadedBytes.toDouble() / totalSegmentBytes.toDouble()).toFloat().coerceIn(0f, 1f)
 }
 
 data class DownloadTask(
@@ -59,7 +83,8 @@ data class DownloadTask(
     val publicUriString: String? = null,
     val errorMessage: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val connectionCount: Int = 2,
+    val connectionCount: Int = 4,
+    val overwriteExisting: Boolean = false,
 ) {
     val progressFraction: Float
         get() = when {

@@ -12,6 +12,7 @@ import com.example.network.VideoLinkExtractor
 import java.io.IOException
 import java.net.UnknownHostException
 import kotlin.coroutines.cancellation.CancellationException
+import com.example.security.DeveloperAccessVerifier
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -73,10 +74,6 @@ data class LinkExtractorScreenState(
 class LinkExtractorViewModel(
     private val resolver: CurlRedirectResolver = CurlRedirectResolver(),
 ) : ViewModel() {
-
-    companion object {
-        const val DEVELOPER_PASSWORD = "ali3973"
-    }
 
     private val _screenState = MutableStateFlow(LinkExtractorScreenState())
     val screenState: StateFlow<LinkExtractorScreenState> = _screenState.asStateFlow()
@@ -155,7 +152,7 @@ class LinkExtractorViewModel(
     }
 
     fun tryUnlockDeveloperMode(password: String): Boolean {
-        return if (password == DEVELOPER_PASSWORD) {
+        return if (DeveloperAccessVerifier.verify(password)) {
             _screenState.update { it.copy(isDeveloperMode = true) }
             true
         } else {

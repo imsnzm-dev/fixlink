@@ -2,5 +2,7 @@
   "name": "FiXLink",
   "description": "FiXLink: Direct video link resolver and multi-connection download manager with pause/resume and queue control",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

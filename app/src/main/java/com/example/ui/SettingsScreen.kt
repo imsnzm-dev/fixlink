@@ -65,6 +65,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.example.download.DownloadSaveLocation
 import com.example.download.QueueConcurrency
 
 @Composable
@@ -72,10 +73,13 @@ fun SettingsScreen(
     state: LinkExtractorScreenState,
     concurrencyLimit: QueueConcurrency,
     connectionsPerDownload: Int,
+    saveLocation: DownloadSaveLocation,
     strings: AppStrings,
     onSelectLanguage: (AppLanguage) -> Unit,
     onConcurrencyChanged: (QueueConcurrency) -> Unit,
     onConnectionsChanged: (Int) -> Unit,
+    onPickSaveFolder: () -> Unit,
+    onResetSaveFolder: () -> Unit,
     onToggleVlcInterceptor: (Boolean) -> Unit,
     onOpenVlcSettings: () -> Unit,
     onAttemptUnlockDeveloper: (String) -> Boolean,
@@ -167,9 +171,12 @@ fun SettingsScreen(
             QueueSettingsCard(
                 concurrencyLimit = concurrencyLimit,
                 connectionsPerDownload = connectionsPerDownload,
+                saveLocation = saveLocation,
                 strings = strings,
                 onConcurrencyChanged = onConcurrencyChanged,
                 onConnectionsChanged = onConnectionsChanged,
+                onPickSaveFolder = onPickSaveFolder,
+                onResetSaveFolder = onResetSaveFolder,
             )
 
             // 3. External Player Receiver (moved completely to Settings)
@@ -303,7 +310,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 4. Developer Mode Section (Password: ali3973)
+            // 4. Developer Mode Section
             Text(
                 text = strings.sectionDeveloper,
                 style = MaterialTheme.typography.titleSmall,
